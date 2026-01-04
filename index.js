@@ -84,69 +84,91 @@ function mudarRoupaYuterin(modo) {
     }
 }
 
-// --- LÓGICA DO VIGIA ---
+// Tenta carregar a memória (nota: no Render Free, isso reseta a cada deploy)
+if (fs.existsSync('memoria.json')) {
+    try {
+        linksConhecidos = JSON.parse(fs.readFileSync('memoria.json'));
+    } catch (e) {
+        linksConhecidos = [];
+    }
+}
+
 async function checarSite(origem = 'auto') {
     try {
         console.log(`[${new Date().toLocaleTimeString()}] Verificando site...`);
         
-        // 1. Muda para roupa de TRABALHO (Vigiando)
-        mudarRoupaYuterin('vigiando');
-
-        // 2. Baixa e processa
+        // 1. Baixa o HTML
         const { data } = await axios.get(URL_ALVO);
         const $ = cheerio.load(data);
         
+        // 2. Procura links e já classifica se é Forms ou não
         const linksAtuais = [];
         $('a').each((i, elemento) => {
             const texto = $(elemento).text().trim();
             const url = $(elemento).attr('href');
-            if (texto && url) linksAtuais.push({ texto, url });
+            
+            if (texto && url) {
+                // Classifica o link
+                const ehGoogleForm = url.includes('forms') || url.includes('docs.google');
+                linksAtuais.push({ texto, url, ehGoogleForm });
+            }
         });
 
+        // 3. Compara com a memória
         const novosLinks = linksAtuais.filter(linkNovo => 
             !linksConhecidos.some(linkVelho => linkVelho.url === linkNovo.url)
         );
 
-        // 3. DECIDE QUAL ROUPA VESTIR DEPOIS DO TRABALHO
+        // 4. LÓGICA DO MVP REFINADA
         if (novosLinks.length > 0) {
-            console.log("Novos links encontrados:", novosLinks);
+            console.log("Diferenças encontradas:", novosLinks.length);
             
-            if (linksConhecidos.length > 0) {
-                const canal = client.channels.cache.get(CANAL_ID);
-                if (canal) {
-                    novosLinks.forEach(link => {
-                        const destaque = link.texto.toLowerCase().includes('ludico') || link.texto.toLowerCase().includes('viagem') 
-                            ? "🚨 **ATENÇÃO: PODE SER VIAGEM!** 🚨\n" 
-                            : "🆕 Novo Link detectado:\n";
-                        canal.send(`${destaque}**${link.texto}**\n${link.url}`);
-                    });
-                }
-                // SE ACHOU NOVIDADE: Fica em modo ALERTA até a próxima verificação
-                mudarRoupaYuterin('alerta');
-            } else {
-                console.log("Primeira execução: Banco populado.");
-                // Se for a primeira vez, não assusta, só vai dormir
-                mudarRoupaYuterin('dormindo');
+            // REGRA: Se a memória estava vazia (Bot acabou de ligar/reiniciar), 
+            // assumimos que tudo o que está lá é VELHO. Não notifica.
+            if (linksConhecidos.length === 0) {
+                console.log("Primeira execução (Reset): Memorizando estado atual sem notificar.");
+                linksConhecidos = linksAtuais;
+                return "Memória inicializada. Monitorando a partir de agora.";
             }
 
+            // Se chegamos aqui, é porque o bot JÁ TINHA memória e algo mudou de verdade.
+            const canal = client.channels.cache.get(CANAL_ID);
+            
+            if (canal) {
+                novosLinks.forEach(link => {
+                    // MUDANÇA: Só grita se for Google Forms (Sua regra de ouro)
+                    // Ou se você quiser ver tudo, mas destacar o forms, use a lógica abaixo:
+                    
+                    if (link.ehGoogleForm) {
+                        // É FORMS! ORO PURO!
+                         client.user.setPresence({
+                            activities: [{ name: 'UMA VIAGEM!', type: ActivityType.Playing }],
+                            status: 'online',
+                        });
+
+                        canal.send({
+                            content: `🚨 **ALERTA DE FORMULÁRIO DETECTADO!** 🚨\n\n<@&SEU_CARGO_ID_AQUI> A Yuterin encontrou um Forms!\n**${link.texto}**\n${link.url}`
+                        });
+                    } else {
+                        // É link comum (Instagram, PDF, etc). O André disse que o MVP foca no Forms.
+                        // Vamos mandar log discreto ou ignorar? 
+                        // Vou deixar mandando discreto pra você saber que ele tá vivo.
+                        canal.send(`ℹ️ Link novo (Não é Forms):\n**${link.texto}**\n${link.url}`);
+                    }
+                });
+            }
+
+            // Atualiza memória
             linksConhecidos = linksAtuais;
             fs.writeFileSync('memoria.json', JSON.stringify(linksConhecidos));
-            return `Encontrei ${novosLinks.length} novidades!`;
+            return `Encontrei ${novosLinks.length} novidades reais!`;
 
         } else {
-            // SE NÃO ACHOU NADA: Vai dormir (Fica fofo com o sleep_icon)
-            // A gente usa um setTimeout pequeno só pra garantir que dê tempo 
-            // de ver o status "Vigiando" se alguém estiver olhando na hora exata
-            setTimeout(() => {
-                mudarRoupaYuterin('dormindo');
-            }, 5000); 
-            
             return "Nada novo sob o sol.";
         }
 
     } catch (error) {
         console.error("Erro ao checar site:", error.message);
-        mudarRoupaYuterin('dnd'); // Se der erro, mantém ocupada
         return "Deu erro ao acessar o site.";
     }
 }
