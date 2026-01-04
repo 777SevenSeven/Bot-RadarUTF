@@ -97,20 +97,36 @@ async function checarSite(origem = 'auto') {
     try {
         console.log(`[${new Date().toLocaleTimeString()}] Verificando site...`);
         
-        // 1. Baixa o HTML
         const { data } = await axios.get(URL_ALVO);
         const $ = cheerio.load(data);
         
-        // 2. Procura links e já classifica se é Forms ou não
         const linksAtuais = [];
+        
+        // --- LISTA NEGRA: O que o bot deve IGNORAR ---
+        const termosProibidos = [
+            'cdn-cgi',           // Cloudflare email protection
+            'email-protection',  // Cloudflare
+            'report phishing',   // Rodapé do site
+            'contact flowpage',  // Rodapé do site
+            'javascript:',       // Botões de script
+            'mailto:'            // Links de enviar email
+        ];
+
         $('a').each((i, elemento) => {
             const texto = $(elemento).text().trim();
             const url = $(elemento).attr('href');
             
+            // Só processa se tiver texto, url e NÃO for proibido
             if (texto && url) {
-                // Classifica o link
-                const ehGoogleForm = url.includes('forms') || url.includes('docs.google');
-                linksAtuais.push({ texto, url, ehGoogleForm });
+                const ehLixo = termosProibidos.some(termo => 
+                    url.toLowerCase().includes(termo) || 
+                    texto.toLowerCase().includes(termo)
+                );
+
+                if (!ehLixo) {
+                    const ehGoogleForm = url.includes('forms') || url.includes('docs.google');
+                    linksAtuais.push({ texto, url, ehGoogleForm });
+                }
             }
         });
 
@@ -119,49 +135,40 @@ async function checarSite(origem = 'auto') {
             !linksConhecidos.some(linkVelho => linkVelho.url === linkNovo.url)
         );
 
-        // 4. LÓGICA DO MVP REFINADA
+        // 4. LÓGICA FINAL
         if (novosLinks.length > 0) {
-            console.log("Diferenças encontradas:", novosLinks.length);
+            console.log("Novidades Limpas:", novosLinks.length);
             
-            // REGRA: Se a memória estava vazia (Bot acabou de ligar/reiniciar), 
-            // assumimos que tudo o que está lá é VELHO. Não notifica.
+            // Se for primeira vez (Memória vazia), salva e fica quieto
             if (linksConhecidos.length === 0) {
-                console.log("Primeira execução (Reset): Memorizando estado atual sem notificar.");
+                console.log("Primeira execução: Banco populado silenciosamente.");
                 linksConhecidos = linksAtuais;
-                return "Memória inicializada. Monitorando a partir de agora.";
+                fs.writeFileSync('memoria.json', JSON.stringify(linksConhecidos));
+                return "Memória inicializada. Yuterin está de olho! 👀";
             }
 
-            // Se chegamos aqui, é porque o bot JÁ TINHA memória e algo mudou de verdade.
             const canal = client.channels.cache.get(CANAL_ID);
-            
             if (canal) {
                 novosLinks.forEach(link => {
-                    // MUDANÇA: Só grita se for Google Forms (Sua regra de ouro)
-                    // Ou se você quiser ver tudo, mas destacar o forms, use a lógica abaixo:
-                    
                     if (link.ehGoogleForm) {
-                        // É FORMS! ORO PURO!
-                         client.user.setPresence({
+                        // PRIORIDADE MÁXIMA: FORMS
+                        client.user.setPresence({
                             activities: [{ name: 'UMA VIAGEM!', type: ActivityType.Playing }],
                             status: 'online',
                         });
-
                         canal.send({
-                            content: `🚨 **ALERTA DE FORMULÁRIO DETECTADO!** 🚨\n\n<@&SEU_CARGO_ID_AQUI> A Yuterin encontrou um Forms!\n**${link.texto}**\n${link.url}`
+                            content: `🚨 **ALERTA DE FORMULÁRIO!** 🚨\n<@&${process.env.CARGO_ID || ''}> A Yuterin encontrou um Forms!\n**${link.texto}**\n${link.url}`
                         });
                     } else {
-                        // É link comum (Instagram, PDF, etc). O André disse que o MVP foca no Forms.
-                        // Vamos mandar log discreto ou ignorar? 
-                        // Vou deixar mandando discreto pra você saber que ele tá vivo.
-                        canal.send(`ℹ️ Link novo (Não é Forms):\n**${link.texto}**\n${link.url}`);
+                        // Link comum limpo (Instagram, PDF, Site normal)
+                        canal.send(`ℹ️ Link novo detectado:\n**${link.texto}**\n${link.url}`);
                     }
                 });
             }
 
-            // Atualiza memória
             linksConhecidos = linksAtuais;
             fs.writeFileSync('memoria.json', JSON.stringify(linksConhecidos));
-            return `Encontrei ${novosLinks.length} novidades reais!`;
+            return `Encontrei ${novosLinks.length} coisas novas (e limpas)!`;
 
         } else {
             return "Nada novo sob o sol.";
